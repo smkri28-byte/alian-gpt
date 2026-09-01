@@ -54,7 +54,7 @@ def get_ai_response(prompt):
 BASE_STYLE = """
 <style>
     body { background-color: #000000; color: #FFFFFF; font-family: 'Arial', sans-serif; margin: 0; padding: 20px; }
-    .auth-container { max-width: 400px; margin: 60px auto; padding: 30px; background-color: #111111; border: 1px solid #222222; border-radius: 8px; text-align: center; }
+    .auth-container { max-width: 400px; margin: 40px auto; padding: 30px; background-color: #111111; border: 1px solid #222222; border-radius: 8px; text-align: center; }
     .dashboard-container { max-width: 1200px; margin: 0 auto; }
     h1 { color: #FFFFFF; font-weight: bold; }
     .headline { font-size: 36px; font-weight: bold; color: #00FFCC; margin-bottom: 30px; }
@@ -103,10 +103,10 @@ LOGIN_HTML = BASE_STYLE + """
     </form>
     
     <div style="margin: 20px 0; border-top: 1px solid #333; padding-top: 15px;">
-        <p style="font-size: 12px; color: #888; margin-bottom: 10px;">Or sign in with</p>
-        <a href="/social-login/google" class="btn-social btn-google">Google</a>
-        <a href="/social-login/facebook" class="btn-social btn-facebook">Facebook</a>
-        <a href="/social-login/github" class="btn-social btn-github">GitHub</a>
+        <p style="font-size: 12px; color: #888; margin-bottom: 10px;">Or sign in instantly with</p>
+        <a href="/social-login/Google" class="btn-social btn-google">Sign in with Google</a>
+        <a href="/social-login/Facebook" class="btn-social btn-facebook">Sign in with Facebook</a>
+        <a href="/social-login/GitHub" class="btn-social btn-github">Sign in with GitHub</a>
     </div>
 
     <p style="margin-top:20px; font-size:14px;">
@@ -227,7 +227,7 @@ ADMIN_HTML = BASE_STYLE + """
         <h3>👥 Manage User Accounts</h3>
         <table>
             <tr>
-                <th>Username</th>
+                <th>Username / Account</th>
                 <th>Role</th>
                 <th>Actions</th>
             </tr>
@@ -242,7 +242,7 @@ ADMIN_HTML = BASE_STYLE + """
                         <input type="submit" value="Delete" style="background-color: #e74c3c; padding: 5px 10px; font-size: 12px;">
                     </form>
                     {% else %}
-                    <em>Protected</em>
+                    <em>Protected Admin</em>
                     {% endif %}
                 </td>
             </tr>
@@ -261,7 +261,7 @@ def home():
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        username = request.form['username']
+        username = request.form['username'].strip()
         password = request.form['password']
         
         conn = sqlite3.connect(DB_FILE)
@@ -280,26 +280,37 @@ def login():
 
 @app.route('/social-login/<provider>')
 def social_login(provider):
-    # Simulated OAuth callback workflow
-    mock_username = f"{provider}_user_{os.urandom(2).hex()}"
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
     try:
-        cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", (mock_username, "oauth_secure", "user"))
-        conn.commit()
-    except sqlite3.IntegrityError:
-        pass
-    conn.close()
-    
-    session['username'] = mock_username
-    session['role'] = 'user'
-    flash(f"Successfully signed in via {provider.capitalize()}!")
-    return redirect(url_for('dashboard'))
+        social_username = f"{provider.lower()}_user"
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        # Check if social user exists, otherwise create cleanly
+        cursor.execute("SELECT username, role FROM users WHERE username = ?", (social_username,))
+        existing = cursor.fetchone()
+        
+        if not existing:
+            cursor.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, ?)", 
+                           (social_username, "oauth_authenticated_pass", "user"))
+            conn.commit()
+            role = "user"
+        else:
+            role = existing[1]
+            
+        conn.close()
+        
+        session['username'] = social_username
+        session['role'] = role
+        flash(f"Successfully signed in via {provider}!")
+        return redirect(url_for('dashboard'))
+    except Exception as e:
+        flash(f"Social login error: {str(e)}")
+        return redirect(url_for('login'))
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
-        username = request.form['username']
+        username = request.form['username'].strip()
         password = request.form['password']
         
         if not username or not password:
@@ -317,7 +328,8 @@ def register():
         except sqlite3.IntegrityError:
             flash("Username already exists. Try another one.")
         finally:
-            conn.close()
+            if conn:
+                conn.close()
             
     return render_template_string(REGISTER_HTML)
 
@@ -331,15 +343,17 @@ def dashboard():
     if "username" not in session:
         return redirect(url_for('login'))
     
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT role FROM users WHERE username = ?", (session['username'],))
-    row = cursor.fetchone()
-    conn.close()
-    
-    role = row[0] if row else 'user'
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT role FROM users WHERE username = ?", (session['username'],))
+        row = cursor.fetchone()
+        conn.close()
+        role = row[0] if row else 'user'
+    except Exception:
+        role = 'user'
+        
     session['role'] = role
-    
     return render_template_string(DASHBOARD_HTML, username=session['username'], role=role, feature_type="none", prev_query="")
 
 @app.route('/admin')
@@ -459,14 +473,17 @@ def run_feature():
             output_data += f"{k}: {v}\n"
             
     elif feature == "analytics":
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM users")
-        count = cursor.fetchone()[0]
-        conn.close()
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM users")
+            count = cursor.fetchone()[0]
+            conn.close()
+        except Exception:
+            count = "Unavailable"
         output_data = f"📊 Study Logs Counter\nDatabase connectivity: Connected to SQLite.\nTotal Registered Accounts: {count}"
 
-    return render_template_string(DASHBOARD_HTML, username=session['username'], role=session.get('role', 'user'), feature_type=feature_type, output_data=output_data, prev_query=query)
+    return render_template_string(DASHBOARD_HTML, username=session.get('username', 'Student'), role=session.get('role', 'user'), feature_type=feature_type, output_data=output_data, prev_query=query)
 
 @app.route('/evaluate-quiz', methods=['POST'])
 def evaluate_quiz():
