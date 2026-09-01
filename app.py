@@ -3,13 +3,20 @@ from google import genai
 import sqlite3
 import PyPDF2
 import json
+from datetime import datetime
+import graphviz
+import base64
 import os
 
 app = Flask(__name__)
 
+# Fetch the secret key safely from the hosting environment
 app.secret_key = os.environ.get("ae1ca680b123bd6926b1ad5ce228071c0d632b2ad2827e37")
+
+# Fetch your Gemini API key safely from the hosting environment
 API_KEY = os.environ.get("GEMINI_API_KEY")
 
+# Fallback check to avoid server crashes if you forget to add the key to Render
 if not API_KEY:
     client = None
 else:
@@ -23,18 +30,11 @@ def init_db():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
-            password TEXT NOT NULL,
-            role TEXT DEFAULT 'user'
+            password TEXT NOT NULL
         )
     ''')
-    # Safely migrate older database versions missing the 'role' column
     try:
-        cursor.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'")
-    except sqlite3.OperationalError:
-        pass 
-        
-    try:
-        cursor.execute("INSERT INTO users VALUES (?, ?, ?)", ("admin", "password123", "admin"))
+        cursor.execute("INSERT INTO users VALUES (?, ?)", ("admin", "password123"))
     except sqlite3.IntegrityError:
         pass
     conn.commit()
@@ -57,7 +57,7 @@ def get_ai_response(prompt):
 BASE_STYLE = """
 <style>
     body { background-color: #000000; color: #FFFFFF; font-family: 'Arial', sans-serif; margin: 0; padding: 20px; }
-    .auth-container { max-width: 400px; margin: 50px auto; padding: 30px; background-color: #111111; border: 1px solid #222222; border-radius: 8px; text-align: center; }
+    .auth-container { max-width: 400px; margin: 100px auto; padding: 30px; background-color: #111111; border: 1px solid #222222; border-radius: 8px; text-align: center; }
     .dashboard-container { max-width: 1200px; margin: 0 auto; }
     h1 { color: #FFFFFF; font-weight: bold; }
     .headline { font-size: 36px; font-weight: bold; color: #00FFCC; margin-bottom: 30px; }
@@ -68,16 +68,11 @@ BASE_STYLE = """
     button:hover, input[type="submit"]:hover { background-color: #333333; }
     .btn-green { background-color: #27ae60 !important; border: none; }
     .btn-green:hover { background-color: #219653 !important; }
-    .btn-admin { background-color: #e67e22 !important; border: none; }
-    .btn-admin:hover { background-color: #d35400 !important; }
     .alert { padding: 10px; background-color: #e74c3c; color: white; border-radius: 4px; margin-bottom: 15px; font-size: 14px; }
     .menu-box { background: #111111; padding: 20px; border-radius: 8px; border: 1px solid #222222; margin-bottom: 20px; }
     .output-box { background: #111111; padding: 20px; border-radius: 8px; border: 1px solid #222222; white-space: pre-wrap; font-family: 'Century Gothic', sans-serif; min-height: 200px; }
     .nav-bar { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #222222; padding-bottom: 10px; margin-bottom: 20px; }
     .quiz-option { display: block; margin: 10px 0; background: #222; padding: 10px; border-radius: 4px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-    th, td { border: 1px solid #333; padding: 10px; text-align: left; }
-    th { background-color: #222; }
 </style>
 """
 
@@ -102,20 +97,9 @@ LOGIN_HTML = BASE_STYLE + """
         </div>
         <input type="submit" value="Log In" style="width: 100%;">
     </form>
-    
     <p style="margin-top:20px; font-size:14px;">
         <a href="/register" style="color: #00FFCC; text-decoration: none;">Create New Account</a>
     </p>
-
-    <div style="margin-top: 25px; border-top: 1px solid #222; padding-top: 20px;">
-        <form method="POST" action="/admin-login-direct">
-            <div class="form-group">
-                <label style="font-size: 13px; color: #e67e22;">Admin Panel Key (Password 2014)</label>
-                <input type="password" name="admin_key" placeholder="Enter Admin Password" required>
-            </div>
-            <input type="submit" value="Access Admin Panel" class="btn-admin" style="width: 100%;">
-        </form>
-    </div>
 </div>
 """
 
@@ -150,12 +134,7 @@ DASHBOARD_HTML = BASE_STYLE + """
 <div class="dashboard-container">
     <div class="nav-bar">
         <h1>AlianGPT, AI assistant for studies</h1>
-        <div>
-            {% if role == 'admin' %}
-                <a href="/admin"><button class="btn-admin" style="margin-right: 10px;">Admin Panel</button></a>
-            {% endif %}
-            <a href="/logout"><button>Log Out</button></a>
-        </div>
+        <a href="/logout"><button>Log Out</button></a>
     </div>
     
     <div class="headline">I am here Where are you? [{{ username }}]</div>
@@ -166,11 +145,11 @@ DASHBOARD_HTML = BASE_STYLE + """
             <div class="form-group" style="display: flex; gap: 10px;">
                 <select name="feature" style="width: 30%;">
                     <option value="ask_ai">Ask AI</option>
-                    <option value="text_mindmap">Text Mindmap</option>
                     <option value="pdf_reader">Open PDF</option>
                     <option value="generate_quiz">Generate Quiz</option>
                     <option value="sample_paper">Sample Paper</option>
                     <option value="generate_code">Generate Code</option>
+                    <option value="mind_map">Mind Map</option>
                     <option value="periodic_table">Periodic Table</option>
                     <option value="analytics">Analytics</option>
                 </select>
@@ -190,6 +169,8 @@ DASHBOARD_HTML = BASE_STYLE + """
     <div class="output-box">
         {% if feature_type == "text" %}
             {{ output_data | safe }}
+        {% elif feature_type == "image" %}
+            <img src="data:image/png;base64,{{ output_data }}" style="max-width: 100%; border-radius: 8px;">
         {% elif feature_type == "quiz" %}
             <form method="POST" action="/evaluate-quiz">
                 <h4>Interactive Quiz Questions:</h4>
@@ -213,47 +194,6 @@ DASHBOARD_HTML = BASE_STYLE + """
 </div>
 """
 
-ADMIN_HTML = BASE_STYLE + """
-<div class="dashboard-container">
-    <div class="nav-bar">
-        <h1>🛠️ Admin Control Panel</h1>
-        <a href="/dashboard"><button>Back to Dashboard</button></a>
-    </div>
-
-    <div class="menu-box">
-        <h3>📊 System Overview</h3>
-        <p>Total Registered Accounts: <strong>{{ total_users }}</strong></p>
-    </div>
-
-    <div class="menu-box">
-        <h3>👥 Manage User Accounts</h3>
-        <table>
-            <tr>
-                <th>Username</th>
-                <th>Role</th>
-                <th>Actions</th>
-            </tr>
-            {% for u in users %}
-            <tr>
-                <td>{{ u[0] }}</td>
-                <td>{{ u[1] }}</td>
-                <td>
-                    {% if u[0] != 'admin' %}
-                    <form action="/admin/delete-user" method="POST" style="display:inline;">
-                        <input type="hidden" name="username" value="{{ u[0] }}">
-                        <input type="submit" value="Delete" style="background-color: #e74c3c; padding: 5px 10px; font-size: 12px;">
-                    </form>
-                    {% else %}
-                    <em>Protected Admin</em>
-                    {% endif %}
-                </td>
-            </tr>
-            {% endfor %}
-        </table>
-    </div>
-</div>
-"""
-
 @app.route('/')
 def home():
     if "username" in session:
@@ -263,39 +203,26 @@ def home():
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        username = request.form['username'].strip()
+        username = request.form['username']
         password = request.form['password']
         
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        cursor.execute("SELECT username, role FROM users WHERE username = ? AND password = ?", (username, password))
+        cursor.execute("SELECT * FROM users WHERE username = ? AND password = ?", (username, password))
         user_found = cursor.fetchone()
         conn.close()
         
         if user_found:
-            session['username'] = user_found[0]
-            session['role'] = user_found[1]
+            session['username'] = username
             return redirect(url_for('dashboard'))
         else:
             flash("Invalid username or password.")
     return render_template_string(LOGIN_HTML)
 
-@app.route('/admin-login-direct', methods=['POST'])
-def admin_login_direct():
-    admin_key = request.form.get('admin_key')
-    if admin_key == "2014":
-        session['username'] = "admin"
-        session['role'] = "admin"
-        flash("Logged into Admin Panel successfully.")
-        return redirect(url_for('admin_panel'))
-    else:
-        flash("Incorrect Admin Key Password.")
-        return redirect(url_for('login'))
-
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
-        username = request.form['username'].strip()
+        username = request.form['username']
         password = request.form['password']
         
         if not username or not password:
@@ -305,7 +232,7 @@ def register():
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         try:
-            cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", (username, password, 'user'))
+            cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password))
             conn.commit()
             flash("Account created successfully! Please log in.")
             conn.close()
@@ -313,65 +240,20 @@ def register():
         except sqlite3.IntegrityError:
             flash("Username already exists. Try another one.")
         finally:
-            if conn:
-                conn.close()
+            conn.close()
             
     return render_template_string(REGISTER_HTML)
 
 @app.route('/logout')
 def logout():
-    session.clear()
+    session.pop('username', None)
     return redirect(url_for('login'))
 
 @app.route('/dashboard')
 def dashboard():
     if "username" not in session:
         return redirect(url_for('login'))
-    
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute("SELECT role FROM users WHERE username = ?", (session['username'],))
-        row = cursor.fetchone()
-        conn.close()
-        role = row[0] if row else 'user'
-    except Exception:
-        role = 'user'
-        
-    session['role'] = role
-    return render_template_string(DASHBOARD_HTML, username=session['username'], role=role, feature_type="none", prev_query="")
-
-@app.route('/admin')
-def admin_panel():
-    if session.get('role') != 'admin':
-        flash("Unauthorized access restricted to administrators.")
-        return redirect(url_for('dashboard'))
-        
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT username, role FROM users")
-    users = cursor.fetchall()
-    cursor.execute("SELECT COUNT(*) FROM users")
-    total_users = cursor.fetchone()[0]
-    conn.close()
-    
-    return render_template_string(ADMIN_HTML, users=users, total_users=total_users)
-
-@app.route('/admin/delete-user', methods=['POST'])
-def delete_user():
-    if session.get('role') != 'admin':
-        return redirect(url_for('dashboard'))
-        
-    target_user = request.form.get('username')
-    if target_user != 'admin':
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM users WHERE username = ?", (target_user,))
-        conn.commit()
-        conn.close()
-        flash(f"User {target_user} deleted successfully.")
-    
-    return redirect(url_for('admin_panel'))
+    return render_template_string(DASHBOARD_HTML, username=session['username'], feature_type="none", prev_query="")
 
 @app.route('/run-feature', methods=['POST'])
 def run_feature():
@@ -390,13 +272,6 @@ def run_feature():
             prompt = f"You are AlianGPT, a CBSE AI Assistant. Explain simply with step-by-step logic. Question: {query}"
             output_data = get_ai_response(prompt)
             
-    elif feature == "text_mindmap":
-        if not query:
-            output_data = "Error: Topic required for mindmap"
-        else:
-            prompt = f"Create a structured text-based hierarchical mindmap using bullet points and indentation for the topic: {query}"
-            output_data = get_ai_response(prompt)
-
     elif feature == "pdf_reader":
         file = request.files.get('pdf_file')
         if not file or file.filename == '':
@@ -436,6 +311,28 @@ def run_feature():
         else:
             output_data = get_ai_response(f'Generate clean Python code for: {query}')
             
+    elif feature == "mind_map":
+        if not query: 
+            output_data = "Error: Map topic required"
+        else:
+            structure = get_ai_response(f"Create a short structural hierarchy mindmap overview for: {query}. Keep it short.")
+            try:
+                dot = graphviz.Digraph(comment=query, format='png')
+                dot.attr(rankdir='LR')
+                dot.node('Center', query, shape='box', style='filled', fillcolor='lightblue')
+                lines = structure.split('\n')
+                for line in lines:
+                    if '-' in line:
+                        node_name = line.replace('-', '').replace(':', '').strip()
+                        if node_name:
+                            dot.node(node_name, node_name)
+                            dot.edge('Center', node_name)
+                img_bytes = dot.pipe(format='png')
+                output_data = base64.b64encode(img_bytes).decode('utf-8')
+                feature_type = "image"
+            except Exception as e:
+                output_data = f"Graphviz layout execution failed: {str(e)}. Ensure Graphviz binary is configured on system."
+                
     elif feature == "periodic_table":
         periodic_table = {"H": "Hydrogen", "He": "Helium", "Li": "Lithium", "Be": "Beryllium", "B": "Boron", "C": "Carbon"}
         output_data = "🧪 Fast Chemical Elements Reference\n\n"
@@ -443,17 +340,9 @@ def run_feature():
             output_data += f"{k}: {v}\n"
             
     elif feature == "analytics":
-        try:
-            conn = sqlite3.connect(DB_FILE)
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM users")
-            count = cursor.fetchone()[0]
-            conn.close()
-        except Exception:
-            count = "Unavailable"
-        output_data = f"📊 Study Logs Counter\nDatabase connectivity: Connected to SQLite.\nTotal Registered Accounts: {count}"
+        output_data = "📊 Study Logs Counter\nDatabase connectivity: Connected to SQLite. Account registries are permanently active."
 
-    return render_template_string(DASHBOARD_HTML, username=session.get('username', 'Student'), role=session.get('role', 'user'), feature_type=feature_type, output_data=output_data, prev_query=query)
+    return render_template_string(DASHBOARD_HTML, username=session['username'], feature_type=feature_type, output_data=output_data, prev_query=query)
 
 @app.route('/evaluate-quiz', methods=['POST'])
 def evaluate_quiz():
@@ -465,7 +354,7 @@ def evaluate_quiz():
         if user_choice and user_choice.startswith(correct):
             score += 1
     result = f"🏁 Quiz Evaluation Complete\nYou answered {score} out of {total} questions correctly!"
-    return render_template_string(DASHBOARD_HTML, username=session.get('username', 'Student'), role=session.get('role', 'user'), feature_type="text", output_data=result, prev_query="")
+    return render_template_string(DASHBOARD_HTML, username=session.get('username', 'Student'), feature_type="text", output_data=result, prev_query="")
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
