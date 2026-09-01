@@ -3,12 +3,11 @@ from google import genai
 import sqlite3
 import PyPDF2
 import json
-from datetime import datetime
 import os
 
 app = Flask(__name__)
 
-app.secret_key = os.environ.get("33f48dd683d260c8b5248ee518fbcfb778f097fb4b6f6cba")
+app.secret_key = os.environ.get("ae1ca680b123bd6926b1ad5ce228071c0d632b2ad2827e37")
 API_KEY = os.environ.get("GEMINI_API_KEY")
 
 if not API_KEY:
@@ -28,6 +27,12 @@ def init_db():
             role TEXT DEFAULT 'user'
         )
     ''')
+    # Safely migrate older database versions missing the 'role' column
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'")
+    except sqlite3.OperationalError:
+        pass 
+        
     try:
         cursor.execute("INSERT INTO users VALUES (?, ?, ?)", ("admin", "password123", "admin"))
     except sqlite3.IntegrityError:
@@ -105,7 +110,7 @@ LOGIN_HTML = BASE_STYLE + """
     <div style="margin-top: 25px; border-top: 1px solid #222; padding-top: 20px;">
         <form method="POST" action="/admin-login-direct">
             <div class="form-group">
-                <label style="font-size: 13px; color: #e67e22;">Admin Portal Key</label>
+                <label style="font-size: 13px; color: #e67e22;">Admin Panel Key (Password 2014)</label>
                 <input type="password" name="admin_key" placeholder="Enter Admin Password" required>
             </div>
             <input type="submit" value="Access Admin Panel" class="btn-admin" style="width: 100%;">
@@ -161,6 +166,7 @@ DASHBOARD_HTML = BASE_STYLE + """
             <div class="form-group" style="display: flex; gap: 10px;">
                 <select name="feature" style="width: 30%;">
                     <option value="ask_ai">Ask AI</option>
+                    <option value="text_mindmap">Text Mindmap</option>
                     <option value="pdf_reader">Open PDF</option>
                     <option value="generate_quiz">Generate Quiz</option>
                     <option value="sample_paper">Sample Paper</option>
@@ -384,6 +390,13 @@ def run_feature():
             prompt = f"You are AlianGPT, a CBSE AI Assistant. Explain simply with step-by-step logic. Question: {query}"
             output_data = get_ai_response(prompt)
             
+    elif feature == "text_mindmap":
+        if not query:
+            output_data = "Error: Topic required for mindmap"
+        else:
+            prompt = f"Create a structured text-based hierarchical mindmap using bullet points and indentation for the topic: {query}"
+            output_data = get_ai_response(prompt)
+
     elif feature == "pdf_reader":
         file = request.files.get('pdf_file')
         if not file or file.filename == '':
